@@ -1,239 +1,1451 @@
+Firmware Rehosting and Vulnerability Validation Lab
+
+1. Purpose
+
+This document describes a practical lab architecture for:
+
+* Rehosting embedded-device firmware without the original physical hardware.
+* Using Penguin, IGLOO, PANDA, and QEMU together.
+* Hosting the analysis environment as a Linux VM under Proxmox.
+* Identifying firmware services and exercising them with appropriate testing tools.
+* Reproducing and validating reported vulnerabilities.
+* Determining whether a reported CVE or vulnerability is:
+    * Confirmed
+    * Not affected
+    * Mitigated
+    * Not reproduced / inconclusive
+    * A likely false positive
+
+The intended use is controlled firmware analysis, vulnerability validation, and defensive security research.
+
+⸻
+
+2. Overall Architecture
+
+For a Proxmox-based lab, the recommended structure is:
+
+Physical Server
+      │
+      ▼
+Proxmox VE
+      │
+      ▼
+Ubuntu Linux Analysis VM
+      │
+      ├── Docker / Podman
+      │
+      ├── Penguin
+      │    └── IGLOO guest/runtime components
+      │
+      ├── PANDA / QEMU
+      │
+      └── Analysis Tools
+           ├── AFL++
+           ├── boofuzz
+           ├── Nmap
+           ├── Burp Suite / OWASP ZAP
+           └── debugging / tracing tools
+                   │
+                   ▼
+             Firmware Target
+
+Proxmox runs the Linux VM.
+
+PANDA is not built into Proxmox.
+
+Proxmox uses QEMU/KVM for general virtualization. PANDA is a separate dynamic-analysis platform derived from QEMU and adds functionality designed for program and security analysis.
 
-Create or refactor this Claude Code Skill using Anthropic's current
-Agent Skills architecture and progressive-disclosure principles.
-
-Use current Anthropic conventions as the source of truth. Do not invent
-metadata fields, directory conventions, resource types, or Claude Code
-capabilities. If something is not defined by Anthropic, do not present it
-as an Anthropic standard.
-
-Goal:
-Keep SKILL.md focused on the core instructions Claude needs when the skill
-activates. Organize supporting resources so additional content is read or
-executed only when required.
-
-Requirements:
-
-1. SKILL.md
-   - Include valid YAML frontmatter, including name and description.
-   - Keep the core workflow, essential instructions, decision/selection logic,
-     and navigation to supporting resources.
-   - Move detailed material out when it can be loaded on demand.
-   - Keep SKILL.md concise; Anthropic recommends under approximately 500 lines
-     when practical.
-
-2. Bundled resources
-   Use Anthropic's standard resource directories when appropriate:
-   - references/ → documentation, detailed procedures, policies, domain
-     knowledge, schemas, edge cases, and other information Claude should
-     load into context when needed.
-   - scripts/ → executable code for deterministic or repetitive operations.
-   - assets/ → templates, boilerplate, images, fonts, or other files primarily
-     used in produced output.
-
-   Do not create a directory merely because it is listed above.
-   Create only resources the skill actually needs.
-
-   Create additional/custom directories only when there is a concrete need.
-   Do not describe a custom directory as an Anthropic standard.
-
-3. Progressive disclosure
-   - Organize the entire skill around what information is needed at each step.
-   - Do not replace one large SKILL.md with one large supporting file.
-   - Split supporting content by meaningful responsibility, workflow stage,
-     variant, or usage condition when doing so enables selective loading.
-   - Keep information together when it is normally needed together.
-   - Avoid both oversized catch-all files and unnecessary fragmentation.
-   - Avoid duplicating instructions across files.
-
-4. Navigation
-   - Reference supporting resources from SKILL.md.
-   - State clearly when Claude should read, use, or execute each resource.
-   - Allow supporting resources to point to more specialized resources when
-     useful for progressive disclosure.
-
-5. Scripts
-   - Use scripts when deterministic or repetitive execution is preferable to
-     having Claude reproduce the operation through reasoning.
-   - Do not create scripts for ordinary instructions that Claude can execute
-     reliably with its existing tools.
-   - Validate newly created scripts when practical.
-
-6. Structure
-   - Do not create empty, placeholder, or ceremonial files/directories.
-   - Choose file boundaries based on responsibility and loading behavior,
-     not arbitrary file-size thresholds.
-   - Preserve existing useful behavior and content.
+A useful mental model is:
 
-7. Before modifying files
-   - Inspect the existing skill and its supporting resources.
-   - Identify its responsibilities and natural progressive-disclosure boundaries.
-   - Determine which supporting resources are actually justified.
-   - Propose the resulting directory tree with a brief reason for each file.
-   - Verify that the proposed structure uses Anthropic-standard conventions
-     correctly and clearly identifies any custom conventions.
-   - Then perform the refactor.
+Proxmox
+   │
+   └── hosts the analysis VM
+           │
+           ▼
+        Penguin
+           │
+           ├── orchestrates firmware rehosting
+           │
+           └── IGLOO helps satisfy hardware expectations
+                       │
+                       ▼
+                  PANDA / QEMU
+                       │
+                       ▼
+                    Firmware
+
+⸻
+
+3. What Firmware Rehosting Means
 
-Preserve existing behavior unless a change is necessary for correctness,
-progressive disclosure, or maintainability. Do not silently remove requirements
-or capabilities during the refactor.
+Firmware rehosting means taking firmware designed for a physical embedded device and running it in an emulated or reconstructed environment.
 
+Examples include firmware from:
 
+* Routers
+* IoT devices
+* Cameras
+* Gateways
+* Industrial devices
+* Network appliances
+* Embedded controllers
+
+On the real device:
+
+┌───────────────────────────┐
+│ Firmware                  │
+│      ↓                    │
+│ CPU + RAM + peripherals   │
+│      ↓                    │
+│ Physical hardware         │
+└───────────────────────────┘
 
-Draw.io skill: https://github.com/Agents365-ai/drawio-skill⁠
-Excalidraw skill: https://github.com/coleam00/excalidraw-diagram-skill⁠
+When rehosted:
 
+┌───────────────────────────┐
+│ Same firmware             │
+│      ↓                    │
+│ QEMU / PANDA              │
+│      ↓                    │
+│ IGLOO                     │
+│      ↓                    │
+│ Penguin orchestration     │
+└───────────────────────────┘
 
-I verified this against the current skill repos, their open issues, Excalidraw documentation, and Playwright documentation. The key difference is:
+QEMU/PANDA provides CPU and system emulation.
 
-Draw.io is already largely offline-capable. Excalidraw requires an internal fork/patch of its renderer to be truly offline.
+IGLOO helps deal with firmware assumptions about hardware that does not physically exist in the analysis VM.
 
-Draw.io skill — internal/offline setup
+Penguin orchestrates the overall rehosting environment.
 
-Copy the skill into your internal Git repo and install it under:
-.claude/skills/drawio-skill/
-Ensure the machine has Python 3. The skill’s core XML/IR, validation, query, sync, review, and related functions are explicitly documented as stdlib-only and offline. 
-For PNG/SVG/PDF rendering, distribute the draw.io Desktop .deb/.rpm through your internal software repository. On headless Debian/Ubuntu also install xvfb:
-xvfb-run -a drawio --version
-Graphviz is optional and only needed for some automatic layouts. 
+Therefore:
 
-Avoid the network-dependent features. Do not use viewer.diagrams.net as a fallback. The skill’s normal draw.io shape index is local, but its AI/LLM logo helper uses public CDNs by default. For those logos, either vendor them internally or generate them with --embed before transferring them into the isolated environment. 
-Test with outbound internet blocked:
-python3 scripts/validate.py diagram.drawio --score
+Emulation is one mechanism used by rehosting. Rehosting is the larger process of making firmware execute sufficiently like it does on the original device.
 
-xvfb-run -a drawio \
-  -x -f png --width 2000 \
-  -o diagram.png diagram.drawio
-Verified: no modification of the core Draw.io skill is necessary for offline generation/validation. You only need local dependencies and must avoid its optional web/CDN paths.
+⸻
 
+4. Penguin and IGLOO
 
-Excalidraw skill — internal/offline setup
+Assuming the MIT Lincoln Laboratory rehosting/igloo_driver and rehosting/penguin stack:
 
-This one does require an internal fork. The current skill’s render_template.html still contains:
+You generally do not need separate VMs for Penguin and IGLOO.
 
-import { exportToSvg }
-  from "https://esm.sh/@excalidraw/excalidraw?bundle";
-so the renderer as currently shipped is not offline.  There are also current bug reports caused by this CDN dependency. 
+IGLOO is part of the guest-side/runtime mechanism used during firmware rehosting, while Penguin provides the host-side orchestration environment.
 
-Use this architecture:
+Conceptually:
 
-excalidraw-diagram/
-├── SKILL.md
-└── references/
-    ├── render_excalidraw.py
-    ├── render_template.html
-    ├── ...
-    └── vendor/
-        ├── excalidraw.bundle.js
-        └── fonts/
-On an internet-connected build machine or your internal npm mirror, pin an approved @excalidraw/excalidraw version and build a browser bundle containing exportToSvg. Commit the resulting bundle into references/vendor/. Local bundling is also the recommended offline solution discussed in the skill’s own issue tracker. 
-Change render_template.html from the esm.sh import to:
-import { exportToSvg }
-  from "./vendor/excalidraw.bundle.js";
-Vendor the fonts too. Excalidraw officially documents that its fonts normally come from a CDN. For offline use, copy:
-node_modules/@excalidraw/excalidraw/dist/prod/fonts
-into your local vendor/fonts/ directory and configure EXCALIDRAW_ASSET_PATH to point there. 
+Penguin
+   │
+   ├── manages execution
+   ├── configures firmware environment
+   ├── integrates analysis components
+   │
+   └── IGLOO runtime
+           │
+           ▼
+     Firmware execution
 
-Serve the renderer from localhost, rather than depending on file://. For example, have render_excalidraw.py start a small local HTTP server for its references/ directory and navigate Playwright to:
-http://127.0.0.1:<port>/render_template.html
-This is entirely local and avoids browser module/CORS problems that have been reported with the current renderer. 
+The result is one primary analysis environment rather than an IGLOO VM plus a Penguin VM.
 
-Mirror Playwright + Chromium internally. The current skill requires Python ≥3.11 and Playwright, and its renderer launches Chromium.  Playwright officially supports an internal browser artifact repository:
-PLAYWRIGHT_DOWNLOAD_HOST=http://your-internal-artifact-server \
-  playwright install chromium
-You can also place the browser in a shared internal location using PLAYWRIGHT_BROWSERS_PATH. 
+⸻
 
-Finally, block external internet but leave loopback available and run:
-uv run python render_excalidraw.py \
-  test.excalidraw \
-  --output test.png
-If the PNG renders correctly and your firewall/proxy logs show no requests to esm.sh, excalidraw.com, npm, or other external CDNs, the skill is truly operating internally.
+5. PANDA
 
-Verified result
+PANDA stands for:
 
+Platform for Architecture-Neutral Dynamic Analysis
 
-Draw.io skill
+PANDA is based on QEMU.
 
-Excalidraw skill
+The simplest relationship is:
 
-Offline core
+QEMU
+ │
+ └── CPU / machine emulation
+          │
+          ▼
+PANDA
+ │
+ └── QEMU + recording + replay + instrumentation + analysis
+          │
+          ▼
+Penguin + IGLOO
+ │
+ └── firmware rehosting and analysis environment
 
-Yes already
+QEMU primarily answers:
 
-Generation yes; renderer no
+Can this ARM, MIPS, x86, or other machine execute?
 
-Needs internal fork
+PANDA adds capabilities useful for detailed investigation.
 
-Usually no
+Examples include:
 
-Yes
+* Record/replay
+* Execution tracing
+* Memory analysis
+* Process observation
+* Plugin-based instrumentation
+* Coverage collection
+* Taint analysis
+* Debugging
+* Repeatable execution analysis
 
-Public CDN dependency
+Suppose a router firmware web server receives an input that reportedly triggers a vulnerability.
 
-Optional AI icons/web fallback
+With ordinary QEMU, you might observe:
 
-Yes, currently mandatory for renderer
+request
+   ↓
+firmware
+   ↓
+crash
 
-Local renderer
+With PANDA, you can investigate:
 
-draw.io Desktop
+request
+   ↓
+which process received it?
+   ↓
+which code executed?
+   ↓
+which function processed it?
+   ↓
+where did the input propagate?
+   ↓
+what memory/state changed?
+   ↓
+what happened immediately before the crash?
 
-Playwright + Chromium
+This is why PANDA is particularly useful when determining whether a vulnerability report describes a real reachable condition.
 
-Extra assets to vendor
+⸻
 
-Optional icons
+6. Recommended VM Resources
 
-Excalidraw JS + fonts
+There are no universally published minimum CPU and RAM requirements for all Penguin workloads, so CPU/RAM sizing should be treated as practical recommendations.
 
-Fully internal achievable
+Resource	Practical Minimum	Recommended
+vCPU	4	8
+RAM	8 GB	16–32 GB
+Disk	50 GB SSD	100–150 GB SSD/NVMe
+OS	Linux x86-64	Ubuntu 22.04/24.04 x86-64
+Container engine	Docker or Podman	Docker
+Nested virtualization	Optional	Enabled
+GPU	None	None
+Network	Needed initially for dependencies	Internet or internal mirror
 
-Yes
+For a permanent single-user analysis VM:
 
-Yes, after patching
+8 vCPU
+16 GB RAM
+120 GB SSD/NVMe
+Ubuntu 24.04 x86-64
+Nested virtualization enabled
+Docker
 
-For your environment, Draw.io is substantially easier and lower-maintenance to deploy internally. Excalidraw is feasible, but I would treat the offline renderer as an internal maintained fork rather than installing the GitHub skill unchanged.
+For development, multiple simultaneous firmware targets, frequent image rebuilding, or larger analysis workloads:
 
+12–16 vCPU
+32 GB RAM
+200 GB+ SSD/NVMe
 
+⸻
 
+7. Why Disk Space Matters
 
+Firmware analysis environments accumulate considerably more storage than the firmware image itself.
 
-Official ADR repo: https://github.com/architecture-decision-record/architecture-decision-record
-ECC ADR skill: https://github.com/affaan-m/ECC
-JamesC ADR workflow skills: https://github.com/jamesc/skills
+Storage may be consumed by:
 
+* Container images
+* Penguin images
+* Nix store generations
+* Firmware images
+* Extracted filesystems
+* PANDA recordings
+* QCOW images
+* Snapshots
+* Debugging artifacts
+* Coverage data
+* Traces
+* Fuzzing corpora
+* Crash samples
+* Analysis reports
 
+Therefore, a 20–30 GB analysis VM is unnecessarily restrictive.
 
+A useful practical baseline is:
 
+50 GB = functional lower bound
+100–150 GB = comfortable analysis VM
+200 GB+ = development / multiple targets / long-term lab
 
-Mostly native to Claude Code. You generally do not install separate packages.
+⸻
 
-Feature	Separate install?	What you need
-/goal	No	Built into current Claude Code. 
-/loop	No	Bundled Anthropic Skill shipped with Claude Code. 
-Dynamic Workflows	No	Built-in workflow runtime; create/save .claude/workflows/*.js. 
-Custom subagents	No	Create .claude/agents/*.md.
-/subtask	No	Built-in; requires a sufficiently recent Claude Code version. 
-Hooks	No	Configure in Claude Code/project settings or skill/agent definitions.
-/background, /fork	No	Built-in. 
-/batch	No	Bundled Anthropic Skill; requires a Git repo. 
-/run, /verify	No	Bundled Skills; project-specific setup may be needed for Claude to know how to run your app. 
-/schedule / Routines	No	Built-in cloud feature, but availability depends on account/environment. 
-Agent Teams	No package install	Disabled by default; enable CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1. 
-MCP	Sometimes	Claude supports MCP natively, but the specific MCP server (Jira, GitLab, etc.) may require installation/config/authentication. 
+8. KVM and Nested Virtualization
 
-So for your workflow, you can stay almost entirely inside your existing Claude Code installation:
+KVM acceleration can substantially improve execution for compatible x86/x86-64 workloads.
 
-Claude Code
-├── CLAUDE.md
-├── .claude/rules/
-├── .claude/skills/
-├── .claude/agents/
-├── .claude/workflows/
-└── hooks/settings
+If the Linux analysis VM itself runs under Proxmox:
 
-The main thing I’d verify is that your Claude Code extension/runtime is current enough, because features such as /subtask and Dynamic Workflows were added in newer versions.
+Physical CPU virtualization extensions
+             │
+             ▼
+          Proxmox
+             │
+             ▼
+     nested virtualization
+             │
+             ▼
+      Ubuntu analysis VM
+             │
+             ▼
+             KVM
 
+Enable nested virtualization when possible.
 
+However, KVM is not required for every workload.
 
+Firmware for architectures such as:
 
+* ARM
+* MIPS
+* PowerPC
+* other embedded architectures
+
+will often rely on software translation/emulation anyway.
+
+Without KVM, QEMU/PANDA can normally fall back to software emulation such as TCG, although performance is lower.
+
+⸻
+
+9. Firmware Analysis Workflow
+
+A typical process is:
+
+Obtain firmware
+      ↓
+Extract filesystem/images
+      ↓
+Determine architecture
+      ↓
+Identify kernel/userspace/services
+      ↓
+Configure Penguin/IGLOO
+      ↓
+Boot with PANDA/QEMU
+      ↓
+Verify normal operation
+      ↓
+Identify reachable services
+      ↓
+Test reported condition
+      ↓
+Record/replay execution
+      ↓
+Analyze behavior
+      ↓
+Determine vulnerability status
+
+⸻
+
+10. Tools and Their Roles
+
+Different tools answer different questions.
+
+Nmap
+
+Use Nmap to determine what the rehosted firmware exposes.
+
+For example:
+
+Firmware
+   ↓
+Network stack
+   ↓
+80/tcp HTTP
+443/tcp HTTPS
+22/tcp SSH
+custom service
+
+This helps identify which externally reachable components are worth investigating.
+
+⸻
+
+Burp Suite / OWASP ZAP
+
+Use these when the firmware exposes an HTTP/HTTPS management interface or API.
+
+Typical uses include analyzing:
+
+* Request handling
+* Authentication
+* Sessions
+* Parameters
+* API behavior
+* Input validation
+* Server responses
+
+⸻
+
+boofuzz
+
+Useful when investigating network protocol implementations.
+
+Examples:
+
+TCP
+UDP
+HTTP-like protocols
+binary protocols
+proprietary device protocols
+
+boofuzz manipulates protocol messages and observes the target’s behavior.
+
+⸻
+
+AFL++
+
+AFL++ is useful for fuzz testing parsers and binaries.
+
+It is particularly useful when source code is unavailable because binary instrumentation/emulation modes can be used.
+
+Conceptually:
+
+Seed input
+   ↓
+AFL++ mutations
+   ↓
+Target parser/service
+   ↓
+interesting execution?
+   │
+   ├── no → continue
+   │
+   └── yes
+        ↓
+     save input
+        ↓
+ crash / abnormal state
+
+⸻
+
+PANDA
+
+PANDA is not primarily a vulnerability scanner.
+
+Instead, it helps determine why something happened.
+
+Examples:
+
+Was the vulnerable code reached?
+Did user-controlled input reach that code?
+Did it affect the dangerous operation?
+Where did execution diverge?
+What happened immediately before the crash?
+
+PANDA is therefore particularly useful after you already have:
+
+* a vulnerability report,
+* suspected trigger,
+* crashing input,
+* unusual behavior,
+* or interesting fuzzing result.
+
+⸻
+
+11. Discovery vs Validation
+
+It is important to distinguish two different activities.
+
+Vulnerability discovery
+
+You do not yet know what bug exists.
+
+Example:
+
+AFL++
+  ↓
+thousands/millions of test inputs
+  ↓
+crash discovered
+
+Vulnerability validation
+
+Someone has already reported a specific vulnerability.
+
+Example:
+
+CVE / security report
+       ↓
+specific affected component
+       ↓
+specific trigger
+       ↓
+reproduce condition
+       ↓
+analyze with PANDA
+
+For validating an existing vulnerability, do not begin with broad fuzzing unless the report itself requires fuzzing.
+
+First reproduce the specific claim.
+
+⸻
+
+12. What Is a CVE?
+
+CVE stands for:
+
+Common Vulnerabilities and Exposures
+
+A CVE provides a standardized identifier for a publicly disclosed cybersecurity vulnerability.
+
+Example:
+
+CVE-2026-12345
+
+The identifier itself does not tell you how severe the vulnerability is.
+
+It primarily provides a common reference so researchers, vendors, scanners, defenders, databases, and patch-management systems can refer to the same vulnerability.
+
+⸻
+
+13. Information Associated With a CVE
+
+A vulnerability record may contain or reference several related concepts.
+
+CVE
+ │
+ ├── affected product/version
+ ├── vulnerability description
+ ├── references/advisories
+ ├── CWE
+ ├── CVSS
+ ├── vendor advisory
+ ├── patches/fixed versions
+ ├── exploit prerequisites
+ └── sometimes additional threat information
+
+These should not be confused with one another.
+
+⸻
+
+14. CVE vs CVSS
+
+CVE identifies the vulnerability.
+
+CVSS describes severity characteristics.
+
+CVSS stands for:
+
+Common Vulnerability Scoring System
+
+A CVSS score may range from:
+
+0.0 → 10.0
+
+For example:
+
+CVE-20XX-XXXXX
+CVSS: 9.8
+
+does not mean:
+
+The vulnerability definitely affects your device.
+
+It means that, assuming the vulnerable condition exists under the assessed circumstances, its technical severity was scored accordingly.
+
+Therefore:
+
+high CVSS ≠ your system is definitely vulnerable
+
+You still need to establish applicability and reachability.
+
+⸻
+
+15. CWE
+
+CWE stands for:
+
+Common Weakness Enumeration
+
+CWE describes the general class of software weakness.
+
+Examples include concepts such as:
+
+buffer overflow
+use-after-free
+improper input validation
+path traversal
+command injection
+authentication weakness
+
+Relationship:
+
+CWE
+ ↓
+type of weakness
+CVE
+ ↓
+specific vulnerability instance
+
+Multiple CVEs can therefore belong to the same CWE category.
+
+⸻
+
+16. CPE
+
+CPE stands for:
+
+Common Platform Enumeration
+
+CPE identifiers are used to describe affected products/platforms in a standardized format.
+
+They can help automated vulnerability-management tools determine whether a particular product/version might match a CVE.
+
+However, version matching can generate false positives.
+
+For example:
+
+Scanner sees:
+Component X version 1.2.3
+CVE database says:
+Component X <= 1.2.3 affected
+
+The scanner may report the CVE even when:
+
+* the vulnerable feature was disabled,
+* the vendor backported a fix without changing the apparent version,
+* the vulnerable function was removed,
+* the component was compiled differently,
+* the vulnerable service is unreachable,
+* or the scanner identified the wrong software.
+
+This is why scanner output should be treated as a lead requiring validation rather than automatic proof of exploitability.
+
+⸻
+
+17. NVD
+
+NVD stands for:
+
+National Vulnerability Database
+
+NVD enriches vulnerability information and commonly provides information such as:
+
+* CVSS data
+* CPE mappings
+* CWE classifications
+* references
+
+The authoritative technical remediation information, however, may come from the affected vendor’s security advisory.
+
+When investigating a CVE, useful sources typically include:
+
+CVE record
+   +
+vendor advisory
+   +
+NVD metadata
+   +
+release notes / patch
+   +
+your actual firmware
+
+⸻
+
+18. Vendor Advisories
+
+The vendor advisory is particularly important because it may identify:
+
+* exact affected firmware versions
+* corrected versions
+* required configuration
+* affected services
+* workarounds
+* whether a patch was backported
+* whether only certain models are affected
+
+For firmware validation, this can be more informative than simply comparing version numbers.
+
+⸻
+
+19. CVSS vs Real-World Applicability
+
+A CVSS score should not be treated as a direct measure of risk to your exact environment.
+
+A firmware image might contain a vulnerable library but never expose the vulnerable functionality.
+
+For example:
+
+Vulnerable library exists
+       ↓
+Scanner detects version
+       ↓
+CVE reported
+
+But:
+
+affected function never invoked
+       ↓
+service disabled
+       ↓
+input cannot reach vulnerable parser
+       ↓
+no reachable vulnerable condition
+
+In that situation, the CVE may technically be present in the software inventory while the reported attack path is not applicable to the deployed device configuration.
+
+Your PANDA analysis can help distinguish those conditions.
+
+⸻
+
+20. Other Useful Vulnerability Metadata
+
+Several additional data sources can help prioritize analysis.
+
+EPSS
+
+EPSS estimates the probability that a published vulnerability will be exploited in the wild over a defined near-term period.
+
+It is useful for prioritization but does not prove your firmware is affected.
+
+⸻
+
+CISA Known Exploited Vulnerabilities Catalog
+
+The KEV catalog identifies vulnerabilities known to have evidence of exploitation in the wild.
+
+A vulnerability appearing there can increase urgency, but applicability still needs to be checked against:
+
+your product
+your version
+your configuration
+your firmware build
+
+⸻
+
+21. Before Testing a Reported CVE
+
+Translate the report into a precise technical claim.
+
+Determine:
+
+CVE
+ ↓
+affected product?
+ ↓
+affected version?
+ ↓
+affected component?
+ ↓
+affected service?
+ ↓
+required configuration?
+ ↓
+required input?
+ ↓
+expected vulnerable behavior?
+ ↓
+claimed consequence?
+
+Example:
+
+Claim:
+An externally supplied request reaches parser X.
+A malformed field causes length calculation Y.
+That length reaches memory operation Z.
+The result is an out-of-bounds access.
+
+That is testable.
+
+A vague statement such as:
+
+"Device is vulnerable to CVE-XXXX-YYYY"
+
+is not enough by itself.
+
+⸻
+
+22. Step 1 — Confirm Version Applicability
+
+Before running PANDA, verify:
+
+firmware version
+component version
+library version
+build date
+vendor patch level
+device model
+configuration
+
+Determine whether the reported CVE actually corresponds to the firmware being tested.
+
+Possible outcome:
+
+Report says:
+affected through 4.2.1
+Firmware contains:
+4.2.4
+→ Not affected by version
+
+But also account for vendor backports.
+
+A firmware package might report an older upstream version while already containing the security patch.
+
+⸻
+
+23. Step 2 — Verify Rehosting Fidelity
+
+Before testing the vulnerability, establish that the firmware works normally in the rehosted environment.
+
+Verify:
+
+firmware boots
+   ↓
+expected processes start
+   ↓
+network interfaces work
+   ↓
+target service starts
+   ↓
+benign request succeeds
+
+This baseline is essential.
+
+If the relevant service never starts because the rehosting environment is incomplete, failure to reproduce the CVE tells you almost nothing.
+
+⸻
+
+24. Step 3 — Establish a Control
+
+Send a normal input first.
+
+Example:
+
+Benign request
+       ↓
+target service
+       ↓
+normal response
+       ↓
+no crash
+
+Record the expected behavior.
+
+This becomes the baseline against which the vulnerability-triggering condition is compared.
+
+⸻
+
+25. Step 4 — Record the Vulnerability Test
+
+Use PANDA to record execution around the suspected vulnerable condition.
+
+Conceptually:
+
+(qemu) begin_record vuln_test
+
+Exercise the reported condition.
+
+Then:
+
+(qemu) end_record
+
+This captures execution so it can be replayed.
+
+Record/replay is extremely useful because you can analyze the exact same event repeatedly without continuously reproducing the original interaction.
+
+⸻
+
+26. Step 5 — Replay
+
+A conceptual replay invocation is:
+
+panda-system-<arch> -m <same-memory> -replay vuln_test
+
+Replay should use settings compatible with those used during recording.
+
+Now you can repeatedly investigate:
+
+same input
+same execution
+same event
+
+with different analysis tools.
+
+⸻
+
+27. Step 6 — Verify Code Reachability
+
+One of the most important questions is:
+
+Did execution actually reach the supposedly vulnerable code?
+
+Use coverage and tracing to determine whether the relevant:
+
+* process
+* module
+* function
+* basic block
+* instruction
+
+was executed.
+
+Possible result:
+
+Reported request
+       ↓
+service receives request
+       ↓
+different parser used
+       ↓
+vulnerable function never executes
+
+That evidence strongly changes the interpretation of the vulnerability report.
+
+⸻
+
+28. Step 7 — Observe the Vulnerable Condition
+
+If the code is reached, determine whether the claimed failure actually occurs.
+
+Possible evidence includes:
+
+invalid memory access
+crash
+assertion failure
+process termination
+unexpected branch
+memory corruption
+state corruption
+unauthorized state transition
+abnormal restart
+
+Do not stop simply because the function was reached.
+
+The goal is to establish whether the specific vulnerability condition occurs.
+
+⸻
+
+29. Step 8 — Track Input With Taint Analysis
+
+If the vulnerability depends on externally controlled data, PANDA’s taint-analysis capabilities can be especially valuable.
+
+Conceptually:
+
+External input
+      ↓
+mark as tainted
+      ↓
+parser
+      ↓
+length/value/pointer
+      ↓
+security-sensitive operation
+
+You want to determine:
+
+Does the reported input actually influence the dangerous operation?
+
+This distinguishes:
+
+Input reaches parser
+
+from:
+
+Input controls vulnerable memory operation
+
+Those are significantly different findings.
+
+⸻
+
+30. Step 9 — Debug the Failure
+
+PANDA’s replay model makes debugging particularly useful.
+
+Instead of repeatedly trying to reproduce:
+
+request → crash
+
+you can replay:
+
+recorded request
+     ↓
+pause execution
+     ↓
+inspect registers
+     ↓
+inspect memory
+     ↓
+inspect call path
+     ↓
+step through failure
+
+This can help identify exactly where the vulnerable behavior occurs.
+
+⸻
+
+31. Step 10 — Run Controls
+
+A strong validation test should include multiple conditions.
+
+For example:
+
+Test A
+Normal input
+→ no failure
+Test B
+Reported triggering input
+→ failure
+Test C
+Nearby but non-triggering input
+→ no failure
+Test D
+Patched firmware + triggering input
+→ no failure
+
+That is much stronger evidence than observing a single unexplained crash.
+
+⸻
+
+32. Strong Confirmation Pattern
+
+One of the strongest validation patterns is:
+
+Vulnerable firmware
++
+reported input
+        ↓
+vulnerable condition occurs
+Vulnerable firmware
++
+normal input
+        ↓
+condition does not occur
+Patched firmware
++
+same reported input
+        ↓
+condition no longer occurs
+
+This provides evidence connecting:
+
+version
++
+input
++
+code path
++
+failure
++
+fix
+
+⸻
+
+33. Evidence Chain
+
+For a reported vulnerability, the evidence chain should ideally establish:
+
+Reported input
+      ↓
+input reaches affected service
+      ↓
+affected code executes
+      ↓
+input influences relevant data/state
+      ↓
+vulnerable condition occurs
+      ↓
+security consequence is demonstrated or technically supported
+
+PANDA is particularly useful in the middle of this chain:
+
+reachability
+     ↓
+data propagation
+     ↓
+execution behavior
+
+⸻
+
+34. Final Vulnerability Classification
+
+Avoid treating every unsuccessful reproduction as a false positive.
+
+A more useful classification system is:
+
+Confirmed
+
+Evidence demonstrates the vulnerable condition in the affected firmware.
+
+trigger
+→ code reached
+→ vulnerable condition
+→ expected consequence
+
+⸻
+
+Not affected
+
+Evidence shows the system does not contain or execute the vulnerable implementation.
+
+Examples:
+
+fixed version
+different component
+vendor backport
+affected function absent
+
+⸻
+
+Mitigated
+
+The vulnerable software may exist, but a control prevents the reported attack path.
+
+Examples could include:
+
+affected service disabled
+feature unavailable
+access restricted
+vendor mitigation applied
+
+This should be documented as mitigation rather than incorrectly labeling the underlying vulnerability nonexistent.
+
+⸻
+
+Not reproduced / inconclusive
+
+The test did not reproduce the vulnerability, but the analysis environment cannot rule it out.
+
+Example:
+
+firmware requires hardware peripheral
+       ↓
+rehost cannot fully model peripheral
+       ↓
+affected path never becomes reachable
+
+This is not sufficient evidence for a false positive.
+
+⸻
+
+Likely false positive
+
+This classification should require evidence.
+
+Examples:
+
+scanner matched incorrect version
+vendor backport verified
+affected component absent
+reported function does not exist
+claimed vulnerable path provably unreachable
+scanner identified wrong product
+
+⸻
+
+35. Why Rehosting Failure Does Not Automatically Mean False Positive
+
+Firmware often depends on:
+
+* hardware registers
+* custom peripherals
+* device-specific drivers
+* timing
+* NVRAM
+* secure elements
+* hardware initialization
+* watchdogs
+* physical I/O
+* proprietary kernel modules
+
+If those dependencies are not modeled sufficiently, the rehosted environment may behave differently from the physical device.
+
+Therefore:
+
+Cannot reproduce in PANDA
+            ≠
+CVE is false
+
+Instead, ask:
+
+Did the affected code actually execute?
+Was the required system state reproduced?
+Were the necessary peripherals represented?
+Was the same configuration used?
+Was the service fully functional?
+
+⸻
+
+36. Recommended Tool Chain
+
+For general firmware vulnerability analysis:
+
+Firmware
+   ↓
+Penguin + IGLOO
+   ↓
+PANDA / QEMU
+   ↓
+firmware boots
+   ↓
+Nmap
+   ↓
+identify exposed services
+   ↓
+appropriate testing tool
+
+For binary/parser investigation:
+
+AFL++
+   ↓
+interesting behavior
+   ↓
+PANDA
+   ↓
+record + replay + trace + analyze
+
+For network protocols:
+
+boofuzz
+   ↓
+protocol input
+   ↓
+firmware
+   ↓
+PANDA analysis
+
+For a web administration interface:
+
+Burp / ZAP
+   ↓
+HTTP/API request
+   ↓
+firmware web service
+   ↓
+PANDA
+
+For an already reported CVE:
+
+CVE / vendor advisory
+        ↓
+determine affected component/version
+        ↓
+reproduce reported condition
+        ↓
+PANDA record
+        ↓
+PANDA replay
+        ↓
+coverage / tracing
+        ↓
+taint if appropriate
+        ↓
+debugging
+        ↓
+controls
+        ↓
+classification
+
+⸻
+
+37. Recommended Proxmox Deployment
+
+For this lab, a clean deployment is:
+
+Physical Server
+      ↓
+Proxmox VE
+      ↓
+Dedicated Ubuntu 24.04 VM
+      ↓
+8 vCPU
+16 GB RAM
+120 GB SSD
+nested virtualization
+      ↓
+Docker
+      ↓
+Penguin + IGLOO
+      ↓
+PANDA / QEMU
+      ↓
+Firmware
+
+Keep firmware analysis inside the dedicated VM instead of installing the research stack directly onto the Proxmox host.
+
+Benefits include:
+
+* isolation
+* easier snapshots
+* easier rollback
+* clean dependency management
+* disposable/rebuildable analysis environment
+* reduced impact on the hypervisor
+
+⸻
+
+38. Recommended Snapshot Strategy
+
+Because Proxmox hosts the analysis VM, use snapshots at major milestones.
+
+Example:
+
+Snapshot 1
+Clean Ubuntu
+Snapshot 2
+Docker + dependencies installed
+Snapshot 3
+Penguin/IGLOO/PANDA working
+Snapshot 4
+Target firmware configured
+Snapshot 5
+Known-good boot state
+
+If an experiment breaks the environment:
+
+rollback
+   ↓
+known-good analysis environment
+
+This is one major advantage of putting the toolchain inside a Proxmox VM.
+
+⸻
+
+39. Suggested Workflow for Each Reported Vulnerability
+
+For every vulnerability report, create a small validation record containing:
+
+CVE / finding ID:
+Device:
+Firmware version:
+Affected component:
+Reported affected versions:
+Reported prerequisite:
+Reported trigger:
+Expected behavior:
+Expected vulnerable behavior:
+Rehost status:
+Affected service reachable:
+Affected code reached:
+Input reaches vulnerable operation:
+Observed result:
+Patched version comparison:
+Final classification:
+Supporting evidence:
+Limitations:
+
+This makes vulnerability validation repeatable and auditable.
+
+⸻
+
+40. Example Decision Flow
+
+Reported CVE
+     │
+     ▼
+Does product/version match?
+ ┌───┴────┐
+ No       Yes
+ │         │
+ ▼         ▼
+Not      Is affected
+affected component present?
+         │
+     ┌───┴────┐
+     No       Yes
+     │         │
+     ▼         ▼
+   Not       Can affected
+ affected    path execute?
+              │
+         ┌────┴────┐
+         No        Yes
+         │          │
+         ▼          ▼
+   investigate    Trigger test
+   why unreachable      │
+                        ▼
+                Condition occurs?
+                   │          │
+                  No         Yes
+                   │          │
+                   ▼          ▼
+             Controls /     Confirmed
+             fidelity check
+                   │
+                   ▼
+         Not affected / mitigated /
+         inconclusive / likely false
+         positive depending on evidence
+
+⸻
+
+41. Core Principle
+
+The objective is not simply:
+
+“Does a scanner list this CVE?”
+
+The objective is to establish:
+
+Does this exact firmware contain the affected implementation?
+Can the relevant code execute?
+Can the reported input reach it?
+Does that input influence the vulnerable operation?
+Does the vulnerable condition actually occur?
+Does a fixed version eliminate the condition?
+
+That turns a vulnerability report into evidence-backed validation.
+
+⸻
+
+42. Summary
+
+The lab can be understood as four layers:
+
+Layer 1
+Proxmox
+→ virtualization and isolation
+Layer 2
+Ubuntu analysis VM
+→ operating environment
+Layer 3
+Penguin + IGLOO + PANDA/QEMU
+→ firmware rehosting and execution analysis
+Layer 4
+Nmap / AFL++ / boofuzz / Burp / ZAP / PANDA plugins
+→ vulnerability discovery, reproduction, and validation
+
+And for a reported CVE:
+
+CVE information
+      ↓
+version applicability
+      ↓
+firmware rehosting
+      ↓
+baseline verification
+      ↓
+reported trigger
+      ↓
+PANDA record/replay
+      ↓
+reachability
+      ↓
+taint / tracing / debugging
+      ↓
+control tests
+      ↓
+evidence
+      ↓
+Confirmed
+Not affected
+Mitigated
+Not reproduced / inconclusive
+or evidence-supported false positive
+
+The central idea is:
+
+PANDA is not primarily there to tell you that a CVE exists. It helps you establish what the firmware actually did when the reported vulnerability condition was exercised.
