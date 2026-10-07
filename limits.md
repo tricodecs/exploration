@@ -60,3 +60,46 @@ So for your validation workflow, you should treat Penguin rehosting as high conf
 
 
 
+
+For Penguin in an air-gapped network, the main challenge is that installing Penguin is only the beginning. The harder part is reproducing everything a particular firmware expects in order to run.
+
+I’d present it this way:
+
+1. Penguin and its software dependencies — Penguin relies on components such as QEMU, libraries, Python packages, build tools, and potentially supporting repositories. In an air gap, those must be pre-staged or mirrored internally.
+2. Firmware images — Penguin does not create the vendor firmware for you. Each firmware image or bundle has to be obtained externally, approved, and transferred into the internal environment.
+3. Firmware-specific dependencies — Different firmware may expect a particular CPU architecture, kernel, filesystem, drivers, startup scripts, networking behavior, storage, NVRAM, or other hardware components. Those dependencies vary significantly from one firmware to another.
+4. Hardware emulation is the difficult part — QEMU can emulate common CPU and hardware components, but some firmware depends on proprietary or device-specific hardware that cannot be reproduced accurately. Penguin may work around some of this, but the further the rehosted environment differs from the real device, the greater the risk of false negatives or misleading test results.
+
+So the presentation takeaway would be:
+
+For Penguin, air-gap complexity is partly about staging software dependencies, but the larger challenge is firmware-specific rehosting. Even with complete internal mirrors, some firmware may still require hardware, drivers, or device behavior that cannot be reproduced accurately in QEMU.
+
+That makes Penguin somewhat different from Ludus: Ludus’s air-gap problem is primarily dependency distribution; Penguin has that same problem plus the technical difficulty of accurately reproducing the target device.
+
+
+
+
+
+
+For Ludus in an air-gapped network, the main challenge is that everything Ludus normally pulls from the internet has to be available internally instead.
+
+I’d present it this way:
+
+1. Proxmox, Debian, and Ludus dependencies — Ludus and its installer normally pull packages, tools, and supporting components from the internet. In an air gap, those dependencies have to be pre-staged and transferred in, or made available through internal mirrors.
+2. VM templates and OS images — Ludus uses Packer to build VM templates from operating system ISOs and images. Those Windows, Linux, or other OS images therefore have to be obtained externally, approved, and transferred into the internal environment.
+3. Configuration content and Ansible dependencies — Ludus uses Ansible to configure the VMs after they are created. Any required Ansible roles, collections, scripts, packages, or external dependencies also have to be mirrored or pre-staged internally.
+4. Software inside the VMs — Even after the VM is created, the operating system and installed tools may normally reach the internet for updates, package repositories, installers, or security tooling. In an air-gapped environment, those resources also need internal mirrors or locally staged packages.
+
+So the presentation takeaway would be:
+
+For Ludus, the air-gap complexity is front-loaded in staging and mirroring all of the dependencies that would normally come from the internet. Once those dependencies are available internally, Ludus can still provide the same repeatable and automated deployment model.
+
+The main challenge is therefore not Ludus itself, but making sure every dependency in the build and configuration chain is available inside the air-gapped environment.
+
+
+
+
+
+
+
+
